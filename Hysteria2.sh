@@ -204,6 +204,168 @@ inst_site(){
     yellow "使用在 Hysteria 2 节点的伪装网站为：$proxysite"
 }
 
+inst_outbound_proxy(){
+    chain_proxy_enabled=0
+    green "Hysteria 2 链式代理出口设置如下："
+    echo ""
+    echo -e " ${GREEN}1.${PLAIN} 不启用链式代理 ${YELLOW}（默认，VPS 本机直出）${PLAIN}"
+    echo -e " ${GREEN}2.${PLAIN} 启用链式代理出口（SOCKS5 / HTTP / HTTPS）"
+    echo ""
+    read -rp "请输入选项 [1-2]: " chainInput
+    if [[ $chainInput == 2 ]]; then
+        read_outbound_proxy
+    else
+        yellow "未启用链式代理出口，节点将使用 VPS 本机 IP 作为落地"
+    fi
+}
+
+read_outbound_proxy(){
+    chain_proxy_enabled=1
+    green "请选择链式代理出口类型："
+    echo ""
+    echo -e " ${GREEN}1.${PLAIN} SOCKS5 ${YELLOW}（推荐，支持 TCP/UDP）${PLAIN}"
+    echo -e " ${GREEN}2.${PLAIN} HTTP / HTTPS ${YELLOW}（仅支持 TCP，UDP 会被拒绝）${PLAIN}"
+    echo ""
+    read -rp "请输入选项 [1-2]: " outboundTypeInput
+    if [[ $outboundTypeInput == 2 ]]; then
+        chain_proxy_type="http"
+        read -rp "请输入代理协议 [http/https]（默认 http）：" proxy_scheme
+        [[ -z $proxy_scheme ]] && proxy_scheme="http"
+        until [[ $proxy_scheme == "http" || $proxy_scheme == "https" ]]; do
+            red "代理协议只能是 http 或 https，请重新输入"
+            read -rp "请输入代理协议 [http/https]（默认 http）：" proxy_scheme
+            [[ -z $proxy_scheme ]] && proxy_scheme="http"
+        done
+    else
+        chain_proxy_type="socks5"
+    fi
+
+    read -rp "请输入代理服务器地址（IP 或域名，不带协议）：" proxy_host
+    until [[ -n $proxy_host ]]; do
+        red "代理服务器地址不能为空"
+        read -rp "请输入代理服务器地址（IP 或域名，不带协议）：" proxy_host
+    done
+
+    read -rp "请输入代理端口：" proxy_port
+    until [[ $proxy_port =~ ^[0-9]+$ && $proxy_port -ge 1 && $proxy_port -le 65535 ]]; do
+        red "代理端口必须是 1-65535 的数字"
+        read -rp "请输入代理端口：" proxy_port
+    done
+
+    read -rp "请输入代理用户名（无认证可回车跳过）：" proxy_user
+    if [[ -n $proxy_user ]]; then
+        read -rp "请输入代理密码：" proxy_pass
+    else
+        proxy_pass=""
+    fi
+
+    if [[ $chain_proxy_type == "http" && $proxy_scheme == "https" ]]; then
+        read -rp "HTTPS 代理是否跳过 TLS 证书验证？[y/N]: " proxy_insecure_input
+        if [[ $proxy_insecure_input =~ ^[Yy]$ ]]; then
+            proxy_insecure="true"
+        else
+            proxy_insecure="false"
+        fi
+    else
+        proxy_insecure="false"
+    fi
+}
+
+append_outbound_config(){
+    local target_file="$1"
+    [[ $chain_proxy_enabled != 1 ]] && return
+
+    {
+        echo ""
+        echo "outbounds:"
+        echo "  - name: default"
+        if [[ $chain_proxy_type == "http" ]]; then
+            local auth_part=""
+            if [[ -n $proxy_user ]]; then
+                auth_part="$proxy_user"
+                [[ -n $proxy_pass ]] && auth_part="$auth_part:$proxy_pass"
+                auth_part="$auth_part@"
+            fi
+            echo "    type: http"
+            echo "    http:"
+            echo "      url: $proxy_scheme://$auth_part$proxy_host:$proxy_port"
+            echo "      insecure: $proxy_insecure"
+        else
+            echo "    type: socks5"
+            echo "    socks5:"
+            echo "      addr: $proxy_host:$proxy_port"
+            [[ -n $proxy_user ]] && echo "      username: $proxy_user"
+            [[ -n $proxy_pass ]] && echo "      password: $proxy_pass"
+        fi
+    } >> "$target_file"
+}
+
+strip_outbound_config(){
+    local source_file="$1"
+    local output_file="$2"
+    awk '
+        /^outbounds:/ { skip=1; next }
+        /^[^[:space:]#][^:]*:/ { skip=0 }
+        !skip { print }
+    ' "$source_file" > "$output_file"
+}
+
+restart_hysteria_with_rollback(){
+    local backup_file="$1"
+
+    stophysteria
+    starthysteria
+
+    if [[ -n $(systemctl status hysteria-server 2>/dev/null | grep -w active) ]]; then
+        green "Hysteria 2 服务重启成功"
+        return 0
+    fi
+
+    red "Hysteria 2 服务重启失败，正在恢复修改前配置"
+    cp "$backup_file" /etc/hysteria/config.yaml
+    stophysteria
+    starthysteria
+    red "已恢复备份配置，请运行 systemctl status hysteria-server 查看失败原因"
+    return 1
+}
+
+change_outbound_proxy(){
+    [[ ! -f /etc/hysteria/config.yaml ]] && red "未找到 /etc/hysteria/config.yaml，请先安装节点" && exit 1
+
+    read_outbound_proxy
+
+    local backup_file="/etc/hysteria/config.yaml.bak.$(date +%s)"
+    local tmp_file="/etc/hysteria/config.yaml.tmp"
+    cp /etc/hysteria/config.yaml "$backup_file"
+    strip_outbound_config /etc/hysteria/config.yaml "$tmp_file"
+    mv "$tmp_file" /etc/hysteria/config.yaml
+    append_outbound_config /etc/hysteria/config.yaml
+
+    restart_hysteria_with_rollback "$backup_file" || exit 1
+
+    green "链式代理出口已更新"
+    if [[ $chain_proxy_type == "http" ]]; then
+        yellow "当前链式代理出口：$proxy_scheme://$proxy_host:$proxy_port"
+        yellow "注意：HTTP/HTTPS 出站不支持 UDP"
+    else
+        yellow "当前链式代理出口：SOCKS5 $proxy_host:$proxy_port"
+    fi
+}
+
+disable_outbound_proxy(){
+    [[ ! -f /etc/hysteria/config.yaml ]] && red "未找到 /etc/hysteria/config.yaml，请先安装节点" && exit 1
+
+    local backup_file="/etc/hysteria/config.yaml.bak.$(date +%s)"
+    local tmp_file="/etc/hysteria/config.yaml.tmp"
+    cp /etc/hysteria/config.yaml "$backup_file"
+    strip_outbound_config /etc/hysteria/config.yaml "$tmp_file"
+    mv "$tmp_file" /etc/hysteria/config.yaml
+
+    restart_hysteria_with_rollback "$backup_file" || exit 1
+
+    green "链式代理出口已关闭，节点将恢复使用 VPS 本机 IP 作为落地"
+}
+
 insthysteria(){
     warpv6=$(curl -s6m8 https://www.cloudflare.com/cdn-cgi/trace -k | grep warp | cut -d= -f2)
     warpv4=$(curl -s4m8 https://www.cloudflare.com/cdn-cgi/trace -k | grep warp | cut -d= -f2)
@@ -218,9 +380,9 @@ insthysteria(){
     fi
 
     if [[ ! ${SYSTEM} == "CentOS" ]]; then
-        ${PACKAGE_UPDATE}
+        ${PACKAGE_UPDATE[int]}
     fi
-    ${PACKAGE_INSTALL} curl wget sudo qrencode procps iptables-persistent netfilter-persistent
+    ${PACKAGE_INSTALL[int]} curl wget sudo qrencode procps iptables-persistent netfilter-persistent
 
     wget -N https://raw.githubusercontent.com/Misaka-blog/hysteria-install/main/hy2/install_server.sh
     bash install_server.sh
@@ -237,6 +399,7 @@ insthysteria(){
     inst_port
     inst_pwd
     inst_site
+    inst_outbound_proxy
 
     # 设置 Hysteria 配置文件
     cat << EOF > /etc/hysteria/config.yaml
@@ -262,6 +425,7 @@ masquerade:
     url: https://$proxysite
     rewriteHost: true
 EOF
+    append_outbound_config /etc/hysteria/config.yaml
 
     # 确定最终入站端口范围
     if [[ -n $firstport ]]; then
@@ -340,6 +504,16 @@ EOF
     fi
     red "======================================================================================"
     green "Hysteria 2 代理服务安装完成"
+    if [[ $chain_proxy_enabled == 1 ]]; then
+        if [[ $chain_proxy_type == "http" ]]; then
+            yellow "已启用链式代理出口：$proxy_scheme://$proxy_host:$proxy_port"
+            yellow "注意：HTTP/HTTPS 出站不支持 UDP"
+        else
+            yellow "已启用链式代理出口：SOCKS5 $proxy_host:$proxy_port"
+        fi
+    else
+        yellow "未启用链式代理出口，当前使用 VPS 本机 IP 作为落地"
+    fi
     yellow "Hysteria 2 客户端 YAML 配置文件 hy-client.yaml 内容如下，并保存到 /root/hy/hy-client.yaml"
     red "$(cat /root/hy/hy-client.yaml)"
     yellow "Hysteria 2 客户端 JSON 配置文件 hy-client.json 内容如下，并保存到 /root/hy/hy-client.json"
@@ -451,7 +625,7 @@ changeproxysite(){
     
     inst_site
 
-    sed -i "s#$oldproxysite#$proxysite#g" /etc/caddy/Caddyfile
+    sed -i "s#$oldproxysite#$proxysite#g" /etc/hysteria/config.yaml
 
     stophysteria && starthysteria
 
@@ -464,13 +638,32 @@ changeconf(){
     echo -e " ${GREEN}2.${PLAIN} 修改密码"
     echo -e " ${GREEN}3.${PLAIN} 修改证书类型"
     echo -e " ${GREEN}4.${PLAIN} 修改伪装网站"
+    echo -e " ${GREEN}5.${PLAIN} 修改/重配链式代理出口"
+    echo -e " ${GREEN}6.${PLAIN} 关闭链式代理出口"
     echo ""
-    read -p " 请选择操作 [1-4]：" confAnswer
+    read -p " 请选择操作 [1-6]：" confAnswer
     case $confAnswer in
         1 ) changeport ;;
         2 ) changepasswd ;;
         3 ) change_cert ;;
         4 ) changeproxysite ;;
+        5 ) change_outbound_proxy ;;
+        6 ) disable_outbound_proxy ;;
+        * ) exit 1 ;;
+    esac
+}
+
+editnode(){
+    green "Hysteria 2 节点编辑选择如下:"
+    echo -e " ${GREEN}1.${PLAIN} 修改节点配置"
+    echo -e " ${GREEN}2.${PLAIN} 启动 / 关闭 / 重启节点"
+    echo -e " ${GREEN}3.${PLAIN} 显示节点配置"
+    echo ""
+    read -p " 请选择操作 [1-3]：" editAnswer
+    case $editAnswer in
+        1 ) changeconf ;;
+        2 ) hysteriaswitch ;;
+        3 ) showconf ;;
         * ) exit 1 ;;
     esac
 }
@@ -490,22 +683,18 @@ menu() {
     echo -e "#                  ${GREEN}Hysteria 2 一键安装脚本${PLAIN}                  #"
     echo "#############################################################"
     echo ""
-    echo -e " ${GREEN}1.${PLAIN} ${GREEN}安装 Hysteria 2${PLAIN}"
-    echo -e " ${RED}2.${PLAIN} ${RED}卸载 Hysteria 2${PLAIN}"
+    echo -e " ${GREEN}1.${PLAIN} ${GREEN}安装节点${PLAIN}"
+    echo -e " ${GREEN}2.${PLAIN} ${GREEN}编辑节点${PLAIN}"
     echo " ------------------------------------------------------------"
-    echo -e " 3. 关闭、开启、重启 Hysteria 2"
-    echo -e " 4. 修改 Hysteria 2 配置"
-    echo -e " 5. 显示 Hysteria 2 配置文件"
+    echo -e " ${RED}3.${PLAIN} ${RED}卸载 Hysteria 2${PLAIN}"
     echo " ------------------------------------------------------------"
     echo -e " 0. 退出脚本"
     echo ""
-    read -rp "请输入选项 [0-5]: " menuInput
+    read -rp "请选择安装还是编辑节点 [0-3]: " menuInput
     case $menuInput in
         1 ) insthysteria ;;
-        2 ) unsthysteria ;;
-        3 ) hysteriaswitch ;;
-        4 ) changeconf ;;
-        5 ) showconf ;;
+        2 ) editnode ;;
+        3 ) unsthysteria ;;
         * ) exit 1 ;;
     esac
 }
