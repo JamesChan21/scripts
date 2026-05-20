@@ -11,14 +11,17 @@ sysctl -p
 sysctl net.ipv4.tcp_available_congestion_control
 lsmod | grep bbr
 ```
-#### Hysteria2 一键安装命令
+
+#### 第一步先安装wget，然后执行下面的一键脚本
+
+#### Hysteria2 一键安装命令（支持配置链式代理，落地代理支持SOCKS5、HTTP、HTTPS协议）【支持"debian"、"ubuntu" 、"centos|red hat|kernel|oracle linux|alma|rocky"、 "'amazon linux'"、 "fedora"】
 ```
 wget -N --no-check-certificate https://raw.githubusercontent.com/nbw-dev/scripts/refs/heads/main/Hysteria2.sh && bash Hysteria2.sh
 ```
 
 #### vless+reality 一键安装命令
 ```
-apt update && wget -N --no-check-certificate https://github.com/nbw-dev/scripts/raw/refs/heads/main/v2ray-reality/install.sh && chmod +x install.sh && ./install.sh
+wget -N --no-check-certificate https://github.com/nbw-dev/scripts/raw/refs/heads/main/v2ray-reality/install.sh && chmod +x install.sh && ./install.sh
 ```
 
 #### vless+reality 卸载命令
@@ -28,7 +31,7 @@ wget -N --no-check-certificate https://github.com/nbw-dev/scripts/raw/refs/heads
 
 #### http+socks5 搭建命令
 ```
-apt update && wget -N --no-check-certificate https://github.com/nbw-dev/scripts/raw/refs/heads/main/socks5-http/install.sh && chmod +x install.sh && ./install.sh
+wget -N --no-check-certificate https://github.com/nbw-dev/scripts/raw/refs/heads/main/socks5-http/install.sh && chmod +x install.sh && ./install.sh
 ```
 
 脚本开源 Github 链接 （欢迎 star）：https://github.com/nbw-dev/scripts
