@@ -1,7 +1,7 @@
 ### 通用的准备工作
-1、VPS一台（建议安装 Ubuntu 22以上版本），看脚本的功能，内存需求不同 （[购买VPS](https://n28.it/evoxt)）
+1、VPS一台（建议安装 Ubuntu 22以上版本），看脚本的功能，内存需求不同 
 
-2、远程连接 vps 工具 finalshell （[点击下载](https://www.hostbuf.com/t/988.html)）
+2、远程连接 vps 工具
 
 #### 一键开启BBR，适用于较新的Debian、Ubuntu
 ```
@@ -35,5 +35,3 @@ wget -N --no-check-certificate https://github.com/JamesChan21/scripts/raw/refs/h
 ```
 
 脚本开源 Github 链接 （欢迎 star）：https://github.com/JamesChan21/scripts
-
-低价 eSIM 流量: https://n28.it/EpYJj
